@@ -23,6 +23,9 @@ struct stHEADER {
 	unsigned short Len;
 };
 
+
+//패딩은 맞음.
+#pragma pack(push, 1)
 struct st_DRAW_PACKET {
 	stHEADER iHeader;
 	int iStartX;
@@ -30,13 +33,7 @@ struct st_DRAW_PACKET {
 	int iEndX;
 	int iEndY;
 };
-
-struct st_DRAW_PACKET_RECV {
-	int iStartX;
-	int iStartY;
-	int iEndX;
-	int iEndY;
-};
+#pragma pack(pop)
 
 
 // 네트워크 전역 변수
@@ -59,7 +56,7 @@ RECT    g_MemDCRect;
 // 드로잉
 bool  g_bDrag = false;
 // 드로잉
-st_DRAW_PACKET_RECV g_Lines[100000];
+st_DRAW_PACKET g_Lines[100000];
 int   g_iLineCount = 0;
 int   g_iOldX = 0;
 int   g_iOldY = 0;
@@ -147,7 +144,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			int xPos = GET_X_LPARAM(lParam);
 			int yPos = GET_Y_LPARAM(lParam);
 
-			stHEADER header = { sizeof(st_DRAW_PACKET) };
+			stHEADER header = { sizeof(st_DRAW_PACKET) -sizeof(stHEADER)};
 			st_DRAW_PACKET packet = { header,g_iOldX, g_iOldY, xPos, yPos };
 			
 			// 1. 일단 큐에 넣기
@@ -223,6 +220,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		case FD_READ:
 			// 패킷 수신 → g_Points에 저장 → InvalidateRect
 		{
+			if (WSAGETSELECTERROR(lParam)) {
+				closesocket(g_sock);
+				break;
+			}
+
 			char localBuf[BUFSIZE];
 
 			int retRecv = recv(g_sock, (char*)localBuf, BUFSIZE, 0);
@@ -232,8 +234,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				break;
 			}
 			recvQ.Enqueue(localBuf, retRecv);
-			while (recvQ.GetUseSize() >= sizeof(st_DRAW_PACKET_RECV)) {
-				st_DRAW_PACKET_RECV packet;
+			while (recvQ.GetUseSize() >= sizeof(st_DRAW_PACKET)) {
+				st_DRAW_PACKET packet;
 				recvQ.Dequeue((char*)&packet, sizeof(packet));
 				
 				// 선분 단위로 저장
@@ -245,6 +247,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			break;
 		case FD_WRITE:
 		{
+			if (WSAGETSELECTERROR(lParam)) {
+				closesocket(g_sock);
+				break;
+			}
+
 			// 송신 버퍼 여유 생김 (못 보낸 거 이어서 전송)
 			if (sendQ.GetUseSize() == 0) break;
 			char localBuf[BUFSIZE];
@@ -264,6 +271,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		}
 			break;
 		case FD_CLOSE:
+
 			// 서버 종료
 			closesocket(g_sock);
 			break;
