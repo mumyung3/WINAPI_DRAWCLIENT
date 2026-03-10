@@ -1,8 +1,11 @@
-﻿#include "framework.h"
+﻿#define _WINSOCK_DEPRECATED_NO_WARNINGS
+
+#include "framework.h"
 #include "WindowsProject1.h"
 #include <windowsx.h>
 
 // 네트워크 코드
+
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32.lib")
 #include <ws2tcpip.h>
@@ -42,8 +45,6 @@ HDC     g_hMemDC;
 RECT    g_MemDCRect;
 
 // 드로잉
-POINT g_Points[100000];
-int   g_iPointCount = 0;
 bool  g_bDrag = false;
 // 드로잉
 st_DRAW_PACKET g_Lines[100000];
@@ -122,18 +123,26 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_LBUTTONDOWN:
 		g_bDrag = true;
-		g_Points[g_iPointCount++] = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+		g_iOldX = GET_X_LPARAM(lParam);
+		g_iOldY = GET_Y_LPARAM(lParam);
 		break;
 
 	case WM_LBUTTONUP:
-		g_Points[g_iPointCount++] = { -1, -1 }; // 선 끊김 마커
 		g_bDrag = false;
 		break;
-
 	case WM_MOUSEMOVE:
 		if (g_bDrag) {
-			g_Points[g_iPointCount++] = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-			InvalidateRect(hWnd, NULL, false);
+			int xPos = GET_X_LPARAM(lParam);
+			int yPos = GET_Y_LPARAM(lParam);
+
+			stHEADER header = { sizeof(st_DRAW_PACKET) };
+			st_DRAW_PACKET packet = { g_iOldX, g_iOldY, xPos, yPos };
+
+			send(g_sock, (char*)&header, sizeof(header), 0);
+			send(g_sock, (char*)&packet, sizeof(packet), 0);
+
+			g_iOldX = xPos;
+			g_iOldY = yPos;
 		}
 		break;
 
@@ -155,15 +164,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		// 소켓 생성
 		g_sock = socket(AF_INET, SOCK_STREAM, 0);
 		
-		// 클라 25000 포트 바인딩
-		SOCKADDR_IN clientaddr;
-		ZeroMemory(&clientaddr, sizeof(clientaddr));
-		clientaddr.sin_family = AF_INET;
-		clientaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-		clientaddr.sin_port = htons(25000);
-
-		bind(g_sock, (SOCKADDR*)&clientaddr, sizeof(clientaddr));
-
 		// 서버 연결
 		SOCKADDR_IN serveraddr;
 		ZeroMemory(&serveraddr, sizeof(serveraddr));
@@ -173,7 +173,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 
 		// WSAAsyncSelect 등록
-		//WSAAsyncSelect(g_sock, hWnd, WM_SOCKET, FD_READ | FD_WRITE | FD_CLOSE | FD_CONNECT);
+		WSAAsyncSelect(g_sock, hWnd, WM_SOCKET, FD_READ | FD_WRITE | FD_CLOSE | FD_CONNECT);
 
 		// connect()
 		connect(g_sock, (SOCKADDR*)&serveraddr, sizeof(serveraddr));
@@ -212,11 +212,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	case WM_PAINT:
 	{
 		PatBlt(g_hMemDC, 0, 0, g_MemDCRect.right, g_MemDCRect.bottom, WHITENESS);
-		for (int i = 1; i < g_iPointCount; i++) {
-			if (g_Points[i - 1].x == -1 || g_Points[i].x == -1) continue;
-			MoveToEx(g_hMemDC, g_Points[i - 1].x, g_Points[i - 1].y, NULL);
-			LineTo(g_hMemDC, g_Points[i].x, g_Points[i].y);
+	
+		//그리기
+		for (int i = 0; i < g_iLineCount; i++) {
+			MoveToEx(g_hMemDC, g_Lines[i].iStartX, g_Lines[i].iStartY, NULL);
+			LineTo(g_hMemDC, g_Lines[i].iEndX, g_Lines[i].iEndY);
 		}
+
 		hdc = BeginPaint(hWnd, &ps);
 		BitBlt(hdc, 0, 0, g_MemDCRect.right, g_MemDCRect.bottom, g_hMemDC, 0, 0, SRCCOPY);
 		EndPaint(hWnd, &ps);
