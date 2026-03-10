@@ -9,6 +9,7 @@
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32.lib")
 #include <ws2tcpip.h>
+#include "ringbuffer.h"
 
 #define MAX_LOADSTRING 100
 
@@ -23,15 +24,26 @@ struct stHEADER {
 };
 
 struct st_DRAW_PACKET {
+	stHEADER iHeader;
 	int iStartX;
 	int iStartY;
 	int iEndX;
 	int iEndY;
 };
 
-// 전역 변수
-SOCKET g_sock;
+struct st_DRAW_PACKET_RECV {
+	int iStartX;
+	int iStartY;
+	int iEndX;
+	int iEndY;
+};
 
+
+// 네트워크 전역 변수
+SOCKET g_sock;
+RingBuffer recvQ;
+RingBuffer sendQ;
+bool g_bConnected = false;
 
 // 전역 변수
 HINSTANCE hInst;
@@ -47,7 +59,7 @@ RECT    g_MemDCRect;
 // 드로잉
 bool  g_bDrag = false;
 // 드로잉
-st_DRAW_PACKET g_Lines[100000];
+st_DRAW_PACKET_RECV g_Lines[100000];
 int   g_iLineCount = 0;
 int   g_iOldX = 0;
 int   g_iOldY = 0;
@@ -131,15 +143,31 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		g_bDrag = false;
 		break;
 	case WM_MOUSEMOVE:
-		if (g_bDrag) {
+		if (g_bDrag && g_bConnected) {
 			int xPos = GET_X_LPARAM(lParam);
 			int yPos = GET_Y_LPARAM(lParam);
 
 			stHEADER header = { sizeof(st_DRAW_PACKET) };
-			st_DRAW_PACKET packet = { g_iOldX, g_iOldY, xPos, yPos };
+			st_DRAW_PACKET packet = { header,g_iOldX, g_iOldY, xPos, yPos };
+			
+			// 1. 일단 큐에 넣기
+			sendQ.Enqueue((char*)&packet, sizeof(packet));
 
-			send(g_sock, (char*)&header, sizeof(header), 0);
-			send(g_sock, (char*)&packet, sizeof(packet), 0);
+
+			char localBuf[BUFSIZE];
+			int sendSize = sendQ.GetUseSize();
+			sendQ.Peek(localBuf, sendSize);
+
+			int retSend = send(g_sock, localBuf, sendSize, 0);
+
+			if (retSend == SOCKET_ERROR) {
+				if (WSAGetLastError() != WSAEWOULDBLOCK) {
+					closesocket(g_sock);
+				}			
+			}
+			else {
+				sendQ.MoveFront(retSend);
+			}
 
 			g_iOldX = xPos;
 			g_iOldY = yPos;
@@ -184,27 +212,60 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	case WM_SOCKET:
 		switch (WSAGETSELECTEVENT(lParam)) {
 		case FD_CONNECT:
-			// 연결 완료
+			if (WSAGETSELECTERROR(lParam)) {
+				// 연결 실패 처리
+				closesocket(g_sock);
+				return 1;
+			}
+			g_bConnected = true;
+
 			break;
 		case FD_READ:
 			// 패킷 수신 → g_Points에 저장 → InvalidateRect
 		{
-			stHEADER header;
-			recv(g_sock, (char*)&header, sizeof(header), 0);
+			char localBuf[BUFSIZE];
 
-			st_DRAW_PACKET packet;
-			recv(g_sock, (char*)&packet, sizeof(packet), 0);
+			int retRecv = recv(g_sock, (char*)localBuf, BUFSIZE, 0);
+			if (retRecv == SOCKET_ERROR) {
+				if (WSAGetLastError() != WSAEWOULDBLOCK)
+					closesocket(g_sock);
+				break;
+			}
+			recvQ.Enqueue(localBuf, retRecv);
+			while (recvQ.GetUseSize() >= sizeof(st_DRAW_PACKET_RECV)) {
+				st_DRAW_PACKET_RECV packet;
+				recvQ.Dequeue((char*)&packet, sizeof(packet));
+				
+				// 선분 단위로 저장
+				g_Lines[g_iLineCount++] = packet;
+				InvalidateRect(hWnd, NULL, false);
+			}
 
-			// 선분 단위로 저장
-			g_Lines[g_iLineCount++] = packet;
-			InvalidateRect(hWnd, NULL, false);
 		}
 			break;
 		case FD_WRITE:
+		{
 			// 송신 버퍼 여유 생김 (못 보낸 거 이어서 전송)
+			if (sendQ.GetUseSize() == 0) break;
+			char localBuf[BUFSIZE];
+			int sendSize = sendQ.GetUseSize();
+			sendQ.Peek(localBuf, sendSize);
+
+			int retSend = send(g_sock, localBuf, sendSize, 0);
+
+			if (retSend == SOCKET_ERROR) {
+				if (WSAGetLastError() != WSAEWOULDBLOCK) {
+					closesocket(g_sock);
+				}
+			}
+			else {
+				sendQ.MoveFront(retSend);
+			}
+		}
 			break;
 		case FD_CLOSE:
 			// 서버 종료
+			closesocket(g_sock);
 			break;
 		}
 		break;
@@ -243,6 +304,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		SelectObject(g_hMemDC, g_hMemDCBitmap_old);
 		DeleteObject(g_hMemDC);
 		DeleteObject(g_hMemDCBitmap);
+		closesocket(g_sock);
+		WSACleanup();
 		PostQuitMessage(0);
 		break;
 
