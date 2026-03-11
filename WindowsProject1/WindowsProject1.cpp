@@ -15,7 +15,7 @@
 
 // 네트워크 코드
 #define SERVERPORT 25000
-#define SERVERIP L"127.0.0.1"
+#define SERVERIP L"192.168.0.6"
 #define WM_SOCKET (WM_USER + 1)
 
 struct stHEADER {
@@ -144,9 +144,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			int xPos = GET_X_LPARAM(lParam);
 			int yPos = GET_Y_LPARAM(lParam);
 
-			stHEADER header = { sizeof(st_DRAW_PACKET) -sizeof(stHEADER)};
+			stHEADER header = { sizeof(st_DRAW_PACKET) - sizeof(stHEADER) };
 			st_DRAW_PACKET packet = { header,g_iOldX, g_iOldY, xPos, yPos };
-			
+
 			// 1. 일단 큐에 넣기
 			sendQ.Enqueue((char*)&packet, sizeof(packet));
 
@@ -160,7 +160,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			if (retSend == SOCKET_ERROR) {
 				if (WSAGetLastError() != WSAEWOULDBLOCK) {
 					closesocket(g_sock);
-				}			
+				}
 			}
 			else {
 				sendQ.MoveFront(retSend);
@@ -188,7 +188,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		// 소켓 생성
 		g_sock = socket(AF_INET, SOCK_STREAM, 0);
-		
+
 		// 서버 연결
 		SOCKADDR_IN serveraddr;
 		ZeroMemory(&serveraddr, sizeof(serveraddr));
@@ -202,7 +202,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		// connect()
 		connect(g_sock, (SOCKADDR*)&serveraddr, sizeof(serveraddr));
-	
+
 	}
 	break;
 
@@ -233,18 +233,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 					closesocket(g_sock);
 				break;
 			}
-			recvQ.Enqueue(localBuf, retRecv);
+			int retEnq = recvQ.Enqueue(localBuf, retRecv); // 인큐 실패가 원인, recv 10바이트만 들어오고 실패하면 버려짐.
+			if (retEnq == RINGBUFFER_ERROR_NOSPACE) {
+				closesocket(g_sock);
+				__debugbreak(); //이땐 연결끊기
+				g_bConnected = false;
+				break;
+			}
 			while (recvQ.GetUseSize() >= sizeof(st_DRAW_PACKET)) {
-				st_DRAW_PACKET packet;
+				st_DRAW_PACKET packet{};
 				recvQ.Dequeue((char*)&packet, sizeof(packet));
-				
+
 				// 선분 단위로 저장
 				g_Lines[g_iLineCount++] = packet;
 				InvalidateRect(hWnd, NULL, false);
 			}
 
 		}
-			break;
+		break;
 		case FD_WRITE:
 		{
 			if (WSAGETSELECTERROR(lParam)) {
@@ -269,19 +275,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				sendQ.MoveFront(retSend);
 			}
 		}
-			break;
+		break;
 		case FD_CLOSE:
+			if (g_bConnected) {
 
-			// 서버 종료
-			closesocket(g_sock);
-			break;
+				g_bConnected = false;
+				// 서버 종료
+				closesocket(g_sock);
+			}
 		}
 		break;
 
 	case WM_PAINT:
 	{
 		PatBlt(g_hMemDC, 0, 0, g_MemDCRect.right, g_MemDCRect.bottom, WHITENESS);
-	
+
 		//그리기
 		for (int i = 0; i < g_iLineCount; i++) {
 			MoveToEx(g_hMemDC, g_Lines[i].iStartX, g_Lines[i].iStartY, NULL);
